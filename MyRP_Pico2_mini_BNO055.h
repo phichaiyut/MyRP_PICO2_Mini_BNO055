@@ -1,12 +1,31 @@
 #ifndef MYRP_PICO2_MINI_BNO055_H
 #define MYRP_PICO2_MINI_BNO055_H
 
-#include "MyRP_Pico2_mini_Buzzer.h"
-#include "MyRP_Pico2_mini_Sensor.h"
-#include "MyRP_Pico2_mini_Motor.h"
-#include "MyRP_Pico2_mini_PID.h"
-#include "MyRP_Pico2_mini_Servo.h"
-#include "MyRP_Pico2_mini_Gyro.h"
+/*
+ * MyRP_Pico2_mini_BNO055.h
+ * ไฟล์หลักของไลบรารี: รวมทุกโมดูล + RobotSetup() + เมนูปุ่ม sw()
+ *
+ * สารบัญ:
+ *   [1] รวมโมดูลทั้งหมด (include)
+ *   [2] เริ่มต้นระบบ (RobotSetup)
+ *   [3] อ่าน ADC ภายนอก (MCP3421)
+ *   [4] เมนูปุ่ม sw() — คาลิเบรต / แสดงค่าเซนเซอร์
+ */
+
+// ======================================================================
+// [1] รวมโมดูลทั้งหมด (include)
+// ======================================================================
+
+#include "MyRP_Pico2_mini_BNO055_Buzzer.h"
+#include "MyRP_Pico2_mini_BNO055_Sensor.h"
+#include "MyRP_Pico2_mini_BNO055_Motor.h"
+#include "MyRP_Pico2_mini_BNO055_PID.h"
+#include "MyRP_Pico2_mini_BNO055_Servo.h"
+#include "MyRP_Pico2_mini_BNO055_Gyro.h"
+
+// ======================================================================
+// [2] เริ่มต้นระบบ (RobotSetup)
+// ======================================================================
 
 void RobotSetup() {
   Serial.begin(115200);
@@ -56,53 +75,81 @@ void RobotSetup() {
 
   adc.begin(14, 15, 16, 13);  // ตั้งขา clk/mosi/miso ครั้งเดียว + CS ชุด B (13)
   pinMode(17, OUTPUT);        // เตรียมขา CS ชุด A (17) ไว้ด้วย — สลับสองชุดด้วย adc.setCS()
-  digitalWrite(17, HIGH);     // ใน read_sensorA()/read_sensorB() (ดู MyRP_Pico2_mini_Sensor.h)
+  digitalWrite(17, HIGH);     // ใน read_sensorA()/read_sensorB() (ดู MyRP_Pico2_mini_BNO055_Sensor.h)
 
   loadCalibration();
   loadCalibration_LOCAL();
-  if (!bno.begin()) {
-    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+  // ลองหา BNO055 ซ้ำได้ไม่เกิน 10 วินาที ถ้าไม่เจอให้ทำงานต่อโดยไม่มี gyro
+  bool imuFound = false;
+  unsigned long imuStart = millis();
+  while (millis() - imuStart < 10000) {
+    if (bno.begin()) {
+      imuFound = true;
+      break;
+    }
+    delay(100);
   }
-  delay(1000);
-  bno.setExtCrystalUse(true);
-  Serial.println("Calibration status values: 0=uncalibrated, 3=fully calibrated");
-  
-  // ตั้งความเร็ว I2C หลังสุด เพราะ bat.begin()/my.begin() เรียก Wire.begin() ซ้ำข้างใน
+  if (!imuFound) {
+    Serial.println("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    Beep(500);
+    delay(200);
+    Beep(500);
+    delay(200);
+    Beep(500);
+    delay(200);
+    Beep(500);
+  } else {
+    Serial.println("BNO055 found!");
+    delay(1000);  // รอ BNO055 เข้าโหมด fusion ให้นิ่งก่อน
+    bno.setExtCrystalUse(true);
+  }
+
+  resetYaw();
+  // ตั้งความเร็ว I2C หลังสุด เพราะ bat.begin()/bno.begin() เรียก Wire.begin() ซ้ำข้างใน
   // ซึ่งจะรีเซ็ตความเร็วบัสกลับเป็นค่าเริ่มต้น ถ้าตั้งไว้ก่อนหน้านี้จะโดนทับ
   Wire.setClock(400000);  // แนะนำ 400 kHz (เสถียรกว่า 1 MHz ในทางปฏิบัติ)
-
   blink(3);
   Serial.println("MyRP_Pico2 Class Ready for Competition!");
 }
+
+// ======================================================================
+// [3] อ่าน ADC ภายนอก (MCP3421)
+// ======================================================================
 
 // อ่านค่าจาก ADC ภายนอก (MCP3421) ผ่าน I2C — ใช้ตรวจแบตเตอรี่ในเมนู sw()
 int ADC_i2c() {
   long ADC01 = 0;
   int adc_01;
 
-  // อ่านจาก Wire (I2C0)
   Wire.requestFrom(MCP3421_ADDR, 4);
   if (Wire.available() == 4) {
     byte b1 = Wire.read();
     byte b2 = Wire.read();
     byte b3 = Wire.read();
-    Wire.read();  // ไบต์ config ของ MCP3421 อ่านทิ้งเพื่อเคลียร์บัฟเฟอร์ ไม่ได้ใช้ค่า
+    Wire.read();
 
     ADC01 = ((long)b1 << 16) | ((long)b2 << 8) | b3;
-    if (b1 & 0x80) ADC01 |= 0xFF000000;  // sign-extend
+    if (b1 & 0x80) ADC01 |= 0xFF000000;
+
+    adc_01 = map(ADC01, 524048, 282, 4000, 0);
+    return adc_01;
   }
-  adc_01 = map(ADC01, 524048, 282, 4000, 0);
-  return adc_01;
+
+  // คืนค่า 9999 หากไม่พบเซนเซอร์ เพื่อป้องกันไม่ให้เข้าเงื่อนไข < 2500
+  return 9999;
 }
 
-// ==================== sw() - เมนู Calibration + แสดงเซนเซอร์ ====================
+// ======================================================================
+// [4] เมนูปุ่ม sw() — คาลิเบรต / แสดงค่าเซนเซอร์
+// ======================================================================
+
 void sw() {
   MotorStop();
-  tone(9, 2000, 100);   // โด
+  tone(9, 2000, 100);  // โด
   delay(100);
-  tone(9, 2400, 100);   // เร
+  tone(9, 2400, 100);  // เร
   delay(100);
-  tone(9, 3000, 160);   // มี
+  tone(9, 3000, 160);  // มี
   delay(500);
   tone(9, 3000, 60);
   delay(80);
@@ -165,7 +212,8 @@ void sw() {
       delay(100);
       digitalWrite(LED_BUILTIN, LOW);
       delay(100);
-      while (digitalRead(2) == LOW);  // รอปล่อยปุ่ม
+      while (digitalRead(2) == LOW)
+        ;          // รอปล่อยปุ่ม
       delay(400);  // ป้องกันการเด้งของปุ่ม
     }
 
@@ -186,7 +234,7 @@ void sw() {
     Serial.print(analogRead(27));
     Serial.print(" ");
     Serial.print("   Gyro: ");
-    Serial.print(gyroZ());
+    Serial.print(gyroZ());  // มุม Yaw ช่วง -180..180
 
     Serial.println();
     delay(100);  // อ่าน/แสดงผลทุก 100ms กันสแปม Serial/สแกน ADC รัวๆ
@@ -219,7 +267,8 @@ void sw() {
           delay(100);
           digitalWrite(LED_BUILTIN, LOW);
           delay(100);
-          while (digitalRead(2) == LOW);  // รอปล่อยปุ่ม
+          while (digitalRead(2) == LOW)
+            ;          // รอปล่อยปุ่ม
           delay(400);  // ป้องกันการเด้งของปุ่ม
         }
       }
@@ -243,4 +292,4 @@ void sw() {
   delay(500);
 }
 
-#endif // MYRP_PICO2_MINI_BNO055_H
+#endif  // MYRP_PICO2_MINI_BNO055_H

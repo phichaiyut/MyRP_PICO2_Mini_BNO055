@@ -1,7 +1,22 @@
 #ifndef MYRP_PICO2_MINI_MOTOR_H
 #define MYRP_PICO2_MINI_MOTOR_H
 
+/*
+ * MyRP_Pico2_mini_BNO055_Motor.h
+ * ขับมอเตอร์ ชดเชยแบตเตอรี่ และตารางความเร็ว / PID ตามความเร็ว
+ *
+ * สารบัญ:
+ *   [1] ขามอเตอร์ / ชดเชยแรงดันแบตเตอรี่
+ *   [2] ขับมอเตอร์ (Motor / Move / MotorStop / MotorShot)
+ *   [3] ตารางความเร็ว / PID / เวลาเบรก ตามช่วงความเร็ว
+ *   [4] เคลื่อนที่พื้นฐาน (fd, bk, sl, sr, tl, tr)
+ */
+
 #include "BatteryMonitor.h"
+
+// ======================================================================
+// [1] ขามอเตอร์ / ชดเชยแรงดันแบตเตอรี่
+// ======================================================================
 
 #define PWMA 19
 #define AIN1 20
@@ -17,12 +32,16 @@ bool DC_Motors = true;
 
 BatteryMonitor bat;
 
-inline void updateBattery() { bat.update(); }
-inline float getBatteryVoltage() { return bat.getVoltage(); }
+inline void updateBattery() {
+  bat.update();
+}
+inline float getBatteryVoltage() {
+  return bat.getVoltage();
+}
 
 float scale = 1.0f;
 
-void set_Freq(String type) {
+void set_Freq(const String &type) {
   if (type == "Coreless_Motors" || type == "coreless") {
     DC_Motors = false;
     analogWriteFreq(20000);
@@ -38,7 +57,7 @@ void bat_control() {
   float voltage = getBatteryVoltage();
 
   if (voltage > 0.5f && voltage >= VMIN && voltage <= VMAX) {
-    scale = pow(VNOM / voltage, 0.95f);
+    scale = powf(VNOM / voltage, 0.95f);
   } else {
     scale = 1.0f;
   }
@@ -46,6 +65,10 @@ void bat_control() {
   // ป้องกัน scale เกินสำหรับ TB6612FNG (พิกัดกระแสต่ำกว่า VNH7070ASTR มาก จึงจำกัดช่วงให้แคบลง)
   scale = constrain(scale, 0.95f, 1.05f);
 }
+
+// ======================================================================
+// [2] ขับมอเตอร์ (Motor / Move / MotorStop / MotorShot)
+// ======================================================================
 
 void Motor(int left, int right) {
   updateBattery();
@@ -59,7 +82,7 @@ void Motor(int left, int right) {
   int pwmL = map(abs(left), 0, 100, 0, 4095);
   int pwmR = map(abs(right), 0, 100, 0, 4095);
 
-  pwmL = constrain((int)(pwmL * scale), 0, 3850);   // Safety limit
+  pwmL = constrain((int)(pwmL * scale), 0, 3850);  // Safety limit
   pwmR = constrain((int)(pwmR * scale), 0, 3850);
 
   // LEFT MOTOR
@@ -131,13 +154,21 @@ void MotorShot(int t = 3, int power = 90) {
   MotorStop();
 }
 
+// ======================================================================
+// [3] ตารางความเร็ว / PID / เวลาเบรก ตามช่วงความเร็ว
+// ======================================================================
+
 int BaseSpeed, LeftBaseSpeed, RightBaseSpeed, BackLeftBaseSpeed, BackRightBaseSpeed;
 float PID_KP_Front, PID_KD_Front;
 float PID_KP_Back, PID_KD_Back;
+int delay_break_f = 30;
+int delay_break_b = 30;
 int L[10], R[10];
 int BL[10], BR[10];
 float KP[10], KD[10];
 float KP_Back[10], KD_Back[10];
+int delay_break_f_table[10] = { 30, 30, 30, 30, 30, 30, 30, 30, 30, 30 };
+int delay_break_b_table[10] = { 30, 30, 30, 30, 30, 30, 30, 30, 30, 30 };
 
 // ดัชนีตารางความเร็ว (ใช้กับ setBalanceSpeed/Set_KP_KD ฯลฯ)
 #define SPD_10 0
@@ -171,6 +202,15 @@ void Set_KP_KD_Back(int ch, float kp, float kd) {
   KD_Back[ch] = kd;
 }
 
+void SetDelayBreak(int ch, int delay_f, int delay_b) {
+  delay_break_f_table[ch] = delay_f;
+  delay_break_b_table[ch] = delay_b;
+}
+
+int LastError_F, LastError_B;            // ค่า error ก่อนหน้าของ PIDF / PIDB
+int LastError_F_none, LastError_B_none;  // ค่า error ก่อนหน้าของ PID แบบ _none
+void resetGyroRunError();                // อยู่ใน Gyro.h: รีเซ็ต previous_errorG / previous_errorGB
+
 // เลือกชุดค่าความเร็ว/PID ตามช่วงของ BaseSpeed (ปัดขึ้นเป็นสิบ เช่น 35 ใช้ชุดของ 40)
 // เดิมเป็น if/else 10 ชุดที่โครงสร้างเหมือนกันทุกอัน ต่างแค่ index ตาราง จึงรวมเป็นสูตรเดียว:
 // ดัชนี 0-9 คำนวณจาก (BaseSpeed - 1) / 10 แล้วจำกัดไม่ให้เกิน SPD_100 (ผลลัพธ์เหมือนเดิมทุกกรณี)
@@ -181,11 +221,22 @@ void InitialSpeed() {
   RightBaseSpeed = BaseSpeed - R[idx];
   BackLeftBaseSpeed = BaseSpeed - BL[idx];
   BackRightBaseSpeed = BaseSpeed - BR[idx];
-  PID_KP_Front = KP[idx];       // forward PID
+  PID_KP_Front = KP[idx];  // forward PID
   PID_KD_Front = KD[idx];
-  PID_KP_Back = KP_Back[idx];   // backward PID
+  PID_KP_Back = KP_Back[idx];  // backward PID
   PID_KD_Back = KD_Back[idx];
+  delay_break_f = delay_break_f_table[idx];
+  delay_break_b = delay_break_b_table[idx];
+  LastError_F = 0;  // รีเซ็ต D-term ไม่ให้ค้างจากคำสั่งก่อนหน้า
+  LastError_B = 0;
+  LastError_F_none = 0;
+  LastError_B_none = 0;
+  resetGyroRunError();  // previous_errorG / previous_errorGB = error ปัจจุบัน
 }
+
+// ======================================================================
+// [4] เคลื่อนที่พื้นฐาน (fd, bk, sl, sr, tl, tr)
+// ======================================================================
 
 void fd(int Speed, int time_ms) {
   BaseSpeed = Speed;
@@ -223,4 +274,4 @@ void tr(int Speed, int time_ms) {
   MotorStop(0);
 }
 
-#endif // MYRP_PICO2_MINI_MOTOR_H
+#endif  // MYRP_PICO2_MINI_MOTOR_H
