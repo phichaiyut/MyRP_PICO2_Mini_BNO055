@@ -46,7 +46,7 @@ void Setting() {
   TurnSpeedLeftBackB(-25, 100, 60);   // เลี้ยวล้อเดียวถอยหลัง เช็คเซนเซอร์หลัง (TurnLeftBackB)
   TurnSpeedRightBackB(100, -25, 60);  // เลี้ยวล้อเดียวถอยหลัง เช็คเซนเซอร์หลัง (TurnRightBackB)
 
-  ModeSpdPID(0, 100, -5);  // โหมดควบคุมความเร็ว
+  ModeSpdPID(0, 100, -5);       // โหมดควบคุมความเร็ว
   set_pid_mode2_limit(20, 20);  // ModeSpdPID โหมด 2: กำลังล้อ -(Speed+ถอย)..(Speed+เร่ง) (เร่ง, ถอย)
   // SetRobotPID(0.014, 0.04);  // PID หลัก (ยังไม่ใช้)
 
